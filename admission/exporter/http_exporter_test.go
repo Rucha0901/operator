@@ -110,3 +110,24 @@ func TestSendAdmissionAlert_SetsK8sAgentPlatform(t *testing.T) {
 		assert.Equal(t, "test-cluster-uid", alert.RuntimeAlertK8sDetails.ClusterUID)
 	}
 }
+
+func TestHTTPExporterConfig_Validate_DefaultContentType(t *testing.T) {
+	config := HTTPExporterConfig{
+		URL: "http://localhost:8080",
+	}
+	err := config.Validate()
+	assert.NoError(t, err)
+	assert.Equal(t, "application/json", config.Headers["Content-Type"])
+}
+
+func TestHTTPExporterConfig_Validate_PreservesCustomContentType(t *testing.T) {
+	config := HTTPExporterConfig{
+		URL: "http://localhost:8080",
+		Headers: map[string]string{
+			"Content-Type": "application/custom+json",
+		},
+	}
+	err := config.Validate()
+	assert.NoError(t, err)
+	assert.Equal(t, "application/custom+json", config.Headers["Content-Type"])
+}
