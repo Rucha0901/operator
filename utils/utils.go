@@ -213,8 +213,10 @@ func PodHasParent(pod *corev1.Pod) bool {
 	if pod == nil {
 		return false
 	}
-	if len(pod.OwnerReferences) > 0 {
-		return slices.Contains([]string{"apps/v1", "batch/v1", "batch/v1beta1"}, pod.OwnerReferences[0].APIVersion)
+	for _, owner := range pod.OwnerReferences {
+		if (owner.Controller != nil && *owner.Controller) || slices.Contains([]string{"apps/v1", "batch/v1", "batch/v1beta1"}, owner.APIVersion) {
+			return true
+		}
 	}
 	if podHash, ok := pod.Labels["pod-template-hash"]; ok && podHash != "" {
 		return true
