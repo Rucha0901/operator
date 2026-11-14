@@ -82,5 +82,6 @@ func (ch *OperatorCommandsHandler) invokeCommand(ctx context.Context, opcmd v1al
 	// invoke the job - status will be updated in the job
 	if err := ch.pool.Invoke(l); err != nil {
 		logger.L().Ctx(ctx).Error("failed to invoke job", helpers.String("ID", cmd.GetID()), helpers.String("command", fmt.Sprintf("%v", cmd)), helpers.Error(err))
+		sessionObj.SetOperatorCommandStatus(ctx, utils.WithError(fmt.Errorf("failed to queue command for execution: %w", err)))
 	}
 }
