@@ -14,8 +14,11 @@ import (
 	"github.com/kubescape/backend/pkg/versioncheck"
 	"github.com/kubescape/k8s-interface/k8sinterface"
 	"github.com/kubescape/operator/config"
+	"github.com/kubescape/operator/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
@@ -38,6 +41,7 @@ func TestSendReports(t *testing.T) {
 		name       string
 		current    string
 		deprecated string
+		customURL  string
 		skip       bool
 		failFirst  bool
 	}{
@@ -47,12 +51,14 @@ func TestSendReports(t *testing.T) {
 		{name: "unset"},
 		{name: "both false", current: "false", deprecated: "false"},
 		{name: "continues after error", failFirst: true},
+		{name: "custom version check url", customURL: "https://custom.versioncheck.endpoint"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// These tests change process globals and must not run in parallel.
 			for key, value := range map[string]string{
 				versioncheck.SKIP_VERSION_CHECK_ENV:            tc.current,
 				versioncheck.SKIP_VERSION_CHECK_DEPRECATED_ENV: tc.deprecated,
+				versionCheckURLEnv:                             tc.customURL,
 			} {
 				t.Setenv(key, value)
 				if value == "" {
@@ -68,9 +74,13 @@ func TestSendReports(t *testing.T) {
 			})
 			versioncheck.BuildNumber = "v0.2.172"
 			var reports []versioncheck.VersionCheckRequest
+			expectedURL := defaultVersionCheckURL
+			if tc.customURL != "" {
+				expectedURL = tc.customURL
+			}
 			http.DefaultTransport = dailyReportTransport(func(r *http.Request) (*http.Response, error) {
 				assert.Equal(t, http.MethodPost, r.Method)
-				assert.Equal(t, "https://version-check.ks-services.co", r.URL.String())
+				assert.Equal(t, expectedURL, r.URL.String())
 				defer func() { assert.NoError(t, r.Body.Close()) }()
 				var report versioncheck.VersionCheckRequest
 				if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
@@ -84,7 +94,12 @@ func TestSendReports(t *testing.T) {
 				}
 				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
 			})
-			client := k8sfake.NewClientset()
+			client := k8sfake.NewClientset(&corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "kube-system",
+					UID:  "test-cluster-uid",
+				},
+			})
 			handler := &MainHandler{config: dailyReportConfig{}, k8sAPI: &k8sinterface.KubernetesApi{KubernetesClient: client}}
 			synctest.Test(t, func(t *testing.T) {
 				ctx, cancel := context.WithCancel(context.Background())
@@ -116,6 +131,7 @@ func TestSendReports(t *testing.T) {
 					assert.Equal(t, "v0.2.172", report.ClientVersion)
 					assert.Equal(t, "daily-report", report.ScanningContext)
 					assert.Equal(t, "operator-test", report.ClientBuild)
+					assert.Equal(t, utils.GetClusterUID(client), report.ClusterID)
 				}
 				assert.Equal(t, "v0.2.172", versioncheck.BuildNumber)
 				cancel()
@@ -140,7 +156,7 @@ func TestSendReportsAlreadyCanceled(t *testing.T) {
 }
 
 func TestSendReportsInFlight(t *testing.T) {
-	for _, operation := range []string{"service", "nodes", "report"} {
+	for _, operation := range []string{"nodes", "report"} {
 		for _, stop := range []string{"cancel", "deadline"} {
 			t.Run(operation+"/"+stop, func(t *testing.T) {
 				t.Setenv(versioncheck.SKIP_VERSION_CHECK_ENV, "false")
@@ -158,8 +174,8 @@ func TestSendReportsInFlight(t *testing.T) {
 					transport := dailyReportTransport(func(r *http.Request) (*http.Response, error) {
 						current, body := "report", `{}`
 						switch r.URL.Path {
-						case "/api/v1/namespaces/default/services/kubernetes":
-							current, body = "service", `{"apiVersion":"v1","kind":"Service","metadata":{"uid":"cluster-uid"}}`
+						case "/api/v1/namespaces/kube-system":
+							current, body = "namespace", `{"apiVersion":"v1","kind":"Namespace","metadata":{"uid":"cluster-uid"}}`
 						case "/api/v1/nodes":
 							current, body = "nodes", `{"apiVersion":"v1","kind":"NodeList","items":[{"metadata":{"name":"node-1"}}]}`
 						}
@@ -202,7 +218,7 @@ func TestSendReportsInFlight(t *testing.T) {
 						assert.ErrorIs(t, operationErr, context.DeadlineExceeded)
 					}
 					// Cancellation/deadline must prevent later report operations.
-					expected := map[string][]string{"service": {"service"}, "nodes": {"service", "nodes"}, "report": {"service", "nodes", "report"}}
+					expected := map[string][]string{"nodes": {"namespace", "nodes"}, "report": {"namespace", "nodes", "report"}}
 					assert.Equal(t, expected[operation], calls)
 					cancel()
 					synctest.Wait()

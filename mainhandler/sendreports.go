@@ -12,10 +12,15 @@ import (
 	"github.com/kubescape/backend/pkg/versioncheck"
 	"github.com/kubescape/go-logger"
 	"github.com/kubescape/go-logger/helpers"
+	"github.com/kubescape/operator/utils"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-const dailyReportTimeout = 30 * time.Second
+const (
+	dailyReportTimeout     = 30 * time.Second
+	defaultVersionCheckURL = "https://version-check.ks-services.co"
+	versionCheckURLEnv     = "VERSION_CHECK_URL"
+)
 
 func (mainHandler *MainHandler) sendDailyReport(ctx context.Context, buildNumber string) error {
 	ctx, cancel := context.WithTimeout(ctx, dailyReportTimeout)
@@ -28,9 +33,7 @@ func (mainHandler *MainHandler) sendDailyReport(ctx context.Context, buildNumber
 		report.ClientBuild = client
 	}
 	if client := mainHandler.k8sAPI.KubernetesClient; client != nil {
-		if svc, err := client.CoreV1().Services("default").Get(ctx, "kubernetes", metav1.GetOptions{}); err == nil {
-			report.ClusterID = string(svc.UID)
-		}
+		report.ClusterID = utils.GetClusterUID(client)
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -47,7 +50,11 @@ func (mainHandler *MainHandler) sendDailyReport(ctx context.Context, buildNumber
 	}
 	// The backend HTTP helper does not propagate context or set a timeout.
 	// Daily reports do not compare Operator versions to Kubescape releases.
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://version-check.ks-services.co", bytes.NewReader(body))
+	reportURL := defaultVersionCheckURL
+	if customURL := os.Getenv(versionCheckURLEnv); customURL != "" {
+		reportURL = customURL
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reportURL, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
